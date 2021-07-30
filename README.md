@@ -14,20 +14,41 @@ handling.
 ## Building it
 
 A Rust toolchain is required to build this application.
+### Install Rust
+* On Unix, run `curl https://sh.rustup.rs -sSf | sh` in your shell. This downloads and runs `rustup-init.sh`, which in turn downloads and runs the correct version of the `rustup-init` executable for your platform.
+* On Windows, download and run `rustup-init.exe` from https://www.rust-lang.org/tools/install.
 
+### Build the Tool
+
+On UNIX run:
 ```
 $ git clone .../vbus-sync
 $ cd vbus-sync
 $ cargo build
-$ ls -l target/debug/vbus-sync
 ```
-
+On Windows run:
+```
+> git clone .../vbus-sync
+> cd vbus-sync
+> cargo build
+```
 
 ## Running it
 
+On UNIX run:
 ```
 $ cd .../vbus-sync
-$ # target/debug/vbus-sync <HOST...>
-$ target/debug/vbus-sync 192.168.180.52
-$ ls -l 192.168.180.52
+$ # with debug output to see what happens:
+$ RUST_LOG=debug target/debug/vbus-sync <HOST...>
+$ # without debug output:
+$ target/debug/vbus-sync <HOST...>
 ```
+On Windows run: 
+```
+> cd .../vbus-sync
+If you want to see what happens: > set RUST_LOG=debug 
+> "target/debug/vbus-sync" <HOST...>
+```
+
+## Arguments
+For the Argument `<Host...>` you can either give the public IP-address (123.456.78.9) or the webinterface (d123456789.vbus.io) of your datalogging devices.    
