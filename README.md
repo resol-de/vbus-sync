@@ -43,12 +43,33 @@ $ RUST_LOG=debug target/debug/vbus-sync <HOST...>
 $ # without debug output:
 $ target/debug/vbus-sync <HOST...>
 ```
-On Windows run: 
+On Windows run:
 ```
 > cd .../vbus-sync
-If you want to see what happens: > set RUST_LOG=debug 
+If you want to see what happens: > set RUST_LOG=debug
 > "target/debug/vbus-sync" <HOST...>
 ```
 
-## <HOST...> 
+## <HOST...>
 As argument `<Host...>` the tool accepts a list of your RESOL data logging devices. You can either specify them by giving the public IP-address (123.456.78.90) or by giving the following part of the Webinterface-URL (d123456789.vbus.io).
+
+
+## Contributors
+
+- Sven Myja
+- [Daniel Wippermann](https://github.com/danielwippermann)
+
+
+## Legal Notices
+
+RESOL, VBus, VBus.net and others are trademarks or registered trademarks of RESOL - Elektronische Regelungen GmbH.
+
+All other trademarks are the property of their respective owners.
+
+
+## License
+
+`vbus-sync` is distributed under the terms of both the MIT license and the
+Apache License (Version 2.0).
+
+See LICENSE.txt for details.
