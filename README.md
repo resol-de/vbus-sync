@@ -50,5 +50,5 @@ If you want to see what happens: > set RUST_LOG=debug
 > "target/debug/vbus-sync" <HOST...>
 ```
 
-## Arguments
-For the Argument `<Host...>` you can either give the public IP-address (123.456.78.9) or the webinterface (d123456789.vbus.io) of your datalogging devices.    
+## <HOST...> 
+As argument `<Host...>` the tool accepts a list of your RESOL data logging devices. You can either specify them by giving the public IP-address (123.456.78.90) or by giving the following part of the Webinterface-URL (d123456789.vbus.io).
