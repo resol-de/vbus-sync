@@ -9,6 +9,8 @@ edition = "2021"
 [dependencies]
 async-h1 = "*"
 async-std = { version = "*", features = [ "attributes" ] }
+chrono = "0.4"
+chrono-tz = "0.6"
 color-eyre = "*"
 http-types = "*"
 resol-vbus = "*"
