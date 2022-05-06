@@ -308,7 +308,7 @@ fn convert(host: &str, spec: &Specification) -> Result<()> {
 
                 let local_now = data_set.timestamp.with_timezone(&tz);
 
-                write!(output, "{}", local_now.format("%Y.%m.%d %H:%M:%S"))?;
+                write!(output, "{}", local_now.format("%d.%m.%Y %H:%M:%S"))?;
 
                 for field in spec.fields_in_data_set(&data_set) {
                     write!(output, "\t{}", field.fmt_raw_value(false))?;
