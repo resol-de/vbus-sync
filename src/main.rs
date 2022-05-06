@@ -1,7 +1,16 @@
-use std::io::Write;
+#![deny(warnings)]
+#![deny(future_incompatible)]
+#![deny(nonstandard_style)]
+#![deny(rust_2018_compatibility)]
+#![deny(rust_2018_idioms)]
+#![deny(rust_2021_compatibility)]
+#![deny(unused)]
+
+use std::{fs::{read_dir, File}, collections::HashMap, io::{Read, Write}, path::{Path, PathBuf}};
 use async_std::{fs::create_dir_all, net::TcpStream};
+use chrono::{Utc, TimeZone, DateTime};
 use http_types::{Method, Request, Url};
-use resol_vbus::{chrono::Duration, Language, RecordingReader, Specification, SpecificationFile};
+use resol_vbus::{Language, Specification, SpecificationFile, RecordingReader};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
@@ -32,6 +41,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 impl IntoError for std::io::Error {}
 impl IntoError for std::num::ParseIntError {}
+impl IntoError for chrono::ParseError {}
 impl IntoError for color_eyre::Report {}
 impl IntoError for http_types::Error {}
 impl IntoError for http_types::url::ParseError {}
@@ -92,16 +102,18 @@ async fn sync_and_convert(host: &str, spec: &Specification) -> Result<()> {
                 if suffix == "_packets.vbus" {
                     let datecode = &body [start_idx..mid_idx];
 
-                    sync_and_convert_for_datecode(host, spec, datecode).await?;
+                    sync_for_datecode(host, datecode).await?;
                 }
             }
         }
     }
 
+    convert(host, spec)?;
+
     Ok(())
 }
 
-async fn sync_and_convert_for_datecode(host: &str, spec: &Specification, datecode: &str) -> Result<()> {
+async fn sync_for_datecode(host: &str, datecode: &str) -> Result<()> {
     debug!("Fetching information about log file dated {}", datecode);
 
     let vbus_filename = format!("{}/{}.vbus", host, datecode);
@@ -137,9 +149,9 @@ async fn sync_and_convert_for_datecode(host: &str, spec: &Specification, datecod
 
     let needs_download = file_size != content_length;
 
-    debug!(?needs_download);
+    // debug!(?needs_download);
 
-    let body = if needs_download {
+    if needs_download {
         let url = format!("http://{}/log/{}_packets.vbus", host, datecode);
         let url = Url::parse(&url)?;
 
@@ -153,59 +165,166 @@ async fn sync_and_convert_for_datecode(host: &str, spec: &Specification, datecod
         let body = res.body_bytes().await?;
 
         async_std::fs::write(&vbus_filename, &body).await?;
-
-        body
     } else {
         debug!("Skipping download for file dated {}", datecode);
-
-        let vbus_bytes = async_std::fs::read(&vbus_filename).await?;
-
-        vbus_bytes
     };
 
-    let csv_filename = format!("{}/{}.csv", host, datecode);
+    Ok(())
+}
 
-    let needs_conversion = needs_download || std::fs::metadata(&csv_filename).is_err();
+fn parse_datecode<Tz: TimeZone>(datecode_str: &str, tz: &Tz) -> Result<DateTime<Tz>> {
+    let datecode = datecode_str.parse::<u32>()?;
+    let year = (datecode / 10000) as i32;
+    let month = (datecode / 100) % 100;
+    let day = datecode % 100;
+    let dt = tz.ymd(year, month, day).and_hms(0, 0, 0);
+    Ok(dt)
+}
 
-    debug!(?needs_conversion);
+fn convert(host: &str, spec: &Specification) -> Result<()> {
+    let mut all_vbus_filenames = Vec::new();
+    let mut vbus_file_modified_by_rel_filename = HashMap::new();
+    let mut csv_file_modified_by_rel_filename = HashMap::new();
 
-    if needs_conversion {
-        let mut rr = RecordingReader::new(body.as_slice());
+    for entry in read_dir(host)? {
+        let entry = entry?;
 
-        let topology_data_set = rr.read_topology_data_set()?;
-
-        let mut rr = RecordingReader::new(body.as_slice());
-
-        let mut out = Vec::new();
-
-        write!(out, "Timestamp")?;
-        for field in spec.fields_in_data_set(&topology_data_set) {
-            write!(out, "\t{}", field.field_spec().name)?;
-        }
-        writeln!(out, "")?;
-
-        let mut cumultative_data_set = topology_data_set.clone();
-        cumultative_data_set.clear_all_packets();
-
-        let duration = Duration::minutes(15);
-
-        while let Some(data_set) = rr.read_data_set()? {
-            let timestamp = data_set.timestamp.clone();
-            let min_timestamp = timestamp.clone() - duration;
-            cumultative_data_set.clear_packets_older_than(min_timestamp);
-
-            cumultative_data_set.add_data_set(data_set);
-
-            write!(out, "{}", timestamp.to_rfc3339())?;
-            for field in spec.fields_in_data_set(&cumultative_data_set) {
-                write!(out, "\t{}", field.fmt_raw_value(false))?;
+        if !entry.file_type()?.is_file() {
+            // nop
+        } else {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if !filename [0..8].chars().all(|c| char::is_digit(c, 10)) {
+                // nop
+            } else if (filename.len() == 13) && filename.ends_with(".vbus") {
+                all_vbus_filenames.push(filename.clone());
+                vbus_file_modified_by_rel_filename.insert(filename, entry.metadata()?.modified()?);
+            } else if (filename.len() == 12) && filename.ends_with(".csv") {
+                csv_file_modified_by_rel_filename.insert(filename, entry.metadata()?.modified()?);
             }
-            writeln!(out, "")?;
+        }
+    }
+
+    all_vbus_filenames.sort();
+
+    let tz = chrono_tz::Europe::Berlin;
+
+    let mut local_to_utc_datecodes = HashMap::new();
+
+    for vbus_filename in &all_vbus_filenames {
+        let datecode_str_utc = vbus_filename [0..8].to_string();
+
+        let start_of_day_utc = parse_datecode(&datecode_str_utc, &Utc)?;
+        let end_of_day_utc = start_of_day_utc.date().and_hms(23, 59, 59);
+
+        let start_of_day_local = start_of_day_utc.with_timezone(&tz);
+        let end_of_day_local = end_of_day_utc.with_timezone(&tz);
+
+        let start_of_day_local_datecode = start_of_day_local.format("%Y%m%d").to_string();
+        let end_of_day_local_datecode = end_of_day_local.format("%Y%m%d").to_string();
+
+        if !local_to_utc_datecodes.contains_key(&start_of_day_local_datecode) {
+            local_to_utc_datecodes.insert(start_of_day_local_datecode.clone(), Vec::new());
+        }
+        local_to_utc_datecodes.get_mut(&start_of_day_local_datecode).unwrap().push(datecode_str_utc.clone());
+
+        if !local_to_utc_datecodes.contains_key(&end_of_day_local_datecode) {
+            local_to_utc_datecodes.insert(end_of_day_local_datecode.clone(), Vec::new());
+        }
+        local_to_utc_datecodes.get_mut(&end_of_day_local_datecode).unwrap().push(datecode_str_utc.clone());
+    }
+
+    for (csv_datecode, mut vbus_datecodes) in local_to_utc_datecodes {
+        let rel_csv_filename = format!("{}.csv", &csv_datecode);
+        let csv_filename = format!("{}/{}", host, &rel_csv_filename);
+        let csv_filename = Path::new(&csv_filename);
+
+        vbus_datecodes.sort();
+
+        let csv_modified = csv_file_modified_by_rel_filename.get(&rel_csv_filename);
+
+        let mut vbus_filenames = Vec::new();
+        let mut needs_conversion = csv_modified.is_none();
+        for vbus_datecode in &vbus_datecodes {
+            let rel_vbus_filename = format!("{}.vbus", &vbus_datecode);
+            if let Some(vbus_modified) = vbus_file_modified_by_rel_filename.get(&rel_vbus_filename) {
+                let vbus_filename = format!("{}/{}", host, rel_vbus_filename);
+                let vbus_filename = PathBuf::from(&vbus_filename);
+
+                vbus_filenames.push(vbus_filename);
+
+                if !needs_conversion {
+                    if *vbus_modified > *csv_modified.unwrap() {
+                        needs_conversion = true;
+                    }
+                }
+            }
         }
 
-        std::fs::write(&csv_filename, &out)?;
-    } else {
-        debug!("Skipping conversion for file dated {}", datecode);
+        if needs_conversion {
+            debug!("Converting {:?} into {:?}...", &vbus_filenames, &csv_filename);
+
+            let start_of_day_local = parse_datecode(&csv_datecode, &tz)?;
+            let end_of_day_local = start_of_day_local.date().and_hms(23, 59, 59);
+
+            let start_of_day_utc = start_of_day_local.with_timezone(&Utc);
+            let end_of_day_utc = end_of_day_local.with_timezone(&Utc);
+
+            let mut vbus_bytes = Vec::new();
+            for vbus_filename in &vbus_filenames {
+                let mut vbus_file = File::open(vbus_filename)?;
+                vbus_file.read_to_end(&mut vbus_bytes)?;
+            }
+
+            let mut rr = RecordingReader::new(vbus_bytes.as_slice());
+            rr.set_min_max_timestamps(Some(start_of_day_utc.clone()), Some(end_of_day_utc.clone()));
+
+            let topo_data_set = rr.read_topology_data_set()?;
+
+            let mut output_buffer = Vec::new();
+            let output = &mut output_buffer;
+
+            write!(output, "Datum")?;
+
+            for field in spec.fields_in_data_set(&topo_data_set) {
+                let name = &field.field_spec().name;
+                let unit_text = field.field_spec().unit_text.trim();
+                if unit_text.len() > 0 {
+                    write!(output, "\t{} [{}]", name, unit_text)?;
+                } else {
+                    write!(output, "\t{}", name)?;
+                }
+            }
+
+            write!(output, "\n")?;
+
+            let mut rr = RecordingReader::new(vbus_bytes.as_slice());
+            rr.set_min_max_timestamps(Some(start_of_day_utc), Some(end_of_day_utc));
+
+            let mut contains_data_lines = false;
+            while let Some(rr_data_set) = rr.read_data_set()? {
+                let mut data_set = topo_data_set.clone();
+                data_set.timestamp = rr_data_set.timestamp;
+                data_set.add_data_set(rr_data_set);
+
+                let local_now = data_set.timestamp.with_timezone(&tz);
+
+                write!(output, "{}", local_now.format("%Y.%m.%d %H:%M:%S"))?;
+
+                for field in spec.fields_in_data_set(&data_set) {
+                    write!(output, "\t{}", field.fmt_raw_value(false))?;
+                }
+
+                write!(output, "\n")?;
+
+                contains_data_lines = true;
+            }
+
+            if contains_data_lines {
+                std::fs::write(csv_filename, output_buffer)?;
+            } else {
+                debug!("    Skipping because CSV would be empty");
+            }
+        }
     }
 
     Ok(())
