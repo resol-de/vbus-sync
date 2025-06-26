@@ -7,45 +7,13 @@
 #![deny(unused)]
 
 use std::{fs::{read_dir, File}, collections::HashMap, io::{Read, Write}, path::{Path, PathBuf}};
+use anyhow::{anyhow, Result};
 use async_std::{fs::create_dir_all, net::TcpStream};
 use chrono::{Utc, TimeZone, DateTime};
 use http_types::{Method, Request, Url};
 use resol_vbus::{Language, Specification, SpecificationFile, RecordingReader};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
-
-#[derive(Debug)]
-struct Error(String);
-
-impl From<String> for Error {
-    fn from(other: String) -> Error {
-        Error(other)
-    }
-}
-
-impl From<&str> for Error {
-    fn from(other: &str) -> Error {
-        Error(other.to_string())
-    }
-}
-
-trait IntoError: std::fmt::Debug {}
-
-impl<T: IntoError> From<T> for Error {
-    fn from(other: T) -> Error {
-        Error(format!("{:?}", other))
-    }
-}
-
-type Result<T> = std::result::Result<T, Error>;
-
-impl IntoError for std::io::Error {}
-impl IntoError for std::num::ParseIntError {}
-impl IntoError for chrono::ParseError {}
-impl IntoError for color_eyre::Report {}
-impl IntoError for http_types::Error {}
-impl IntoError for http_types::url::ParseError {}
-impl IntoError for resol_vbus::Error {}
 
 #[async_std::main]
 async fn main() -> Result<()> {
@@ -72,13 +40,19 @@ async fn sync_and_convert(host: &str, spec: &Specification) -> Result<()> {
     let url = Url::parse(&url)?;
 
     let req = Request::new(Method::Get, url);
-    let mut res = async_h1::connect(stream.clone(), req).await?;
+    let mut res = match async_h1::connect(stream.clone(), req).await {
+        Ok(res) => res,
+        Err(err) => return Err(anyhow!("Unable to download list of datecodes: {err:?}")),
+    };
 
     if !res.status().is_success() {
-        return Err("Unable to download log directory index".into());
+        return Err(anyhow!("Unable to download log directory index"));
     }
 
-    let body = res.body_string().await?;
+    let body = match res.body_string().await {
+        Ok(body) => body,
+        Err(err) => return Err(anyhow!("Unable to download list of datecodes: {err:?}")),
+    };
 
     // debug!(%body);
 
@@ -125,10 +99,13 @@ async fn sync_for_datecode(host: &str, datecode: &str) -> Result<()> {
     let url = Url::parse(&url)?;
 
     let req = Request::new(Method::Head, url);
-    let res = async_h1::connect(stream.clone(), req).await?;
+    let res = match async_h1::connect(stream.clone(), req).await {
+        Ok(res) => res,
+        Err(err) => return Err(anyhow!("Unable to get info about {datecode:?}: {err:?}")),
+    };
 
     if !res.status().is_success() {
-        return Err(format!("Unable to download log file dated {}", datecode).into());
+        return Err(anyhow!("Unable to download log file dated {}", datecode));
     }
 
     // debug!(?res);
@@ -136,7 +113,7 @@ async fn sync_for_datecode(host: &str, datecode: &str) -> Result<()> {
     let content_length = if let Some(content_length) = res.header("content-length") {
         content_length.as_str().parse::<u64>()?
     } else {
-        return Err(format!("Unable to determine file size dated {}", datecode).into());
+        return Err(anyhow!("Unable to determine file size dated {}", datecode));
     };
 
     // debug!(?content_length);
@@ -156,13 +133,19 @@ async fn sync_for_datecode(host: &str, datecode: &str) -> Result<()> {
         let url = Url::parse(&url)?;
 
         let req = Request::new(Method::Get, url);
-        let mut res = async_h1::connect(stream.clone(), req).await?;
+        let mut res = match async_h1::connect(stream.clone(), req).await {
+            Ok(res) => res,
+            Err(err) => return Err(anyhow!("Unable to download {datecode:?}: {err:?}")),
+        };
 
         if !res.status().is_success() {
-            return Err(format!("Unable to download log file dated {}", datecode).into());
+            return Err(anyhow!("Unable to download log file dated {}", datecode));
         }
 
-        let body = res.body_bytes().await?;
+        let body = match res.body_bytes().await {
+            Ok(body) => body,
+            Err(err) => return Err(anyhow!("Unable to download {datecode:?}: {err:?}")),
+        };
 
         async_std::fs::write(&vbus_filename, &body).await?;
     } else {
@@ -334,7 +317,7 @@ fn setup_debugging() -> Result<()> {
     if std::env::var("RUST_BACKTRACE").is_err() {
         std::env::set_var("RUST_BACKTRACE", "1")
     }
-    color_eyre::install()?;
+    color_eyre::install().map_err(|err| anyhow!("Unable to install color_eye: {err:?}"))?;
 
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info")
